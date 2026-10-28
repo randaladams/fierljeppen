@@ -1,9 +1,12 @@
 # Godot 4
 .godot/
 /android/
+/build/
 *.translation
-export_presets.cfg
+
+# Signing: only the throwaway debug key in signing/ is committed.
 *.keystore
+!signing/debug.keystore
 *.apk
 *.aab
 
