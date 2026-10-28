@@ -9,7 +9,15 @@ The plan is two modes on one physics model:
 
 This repository currently holds the **physics prototype**: everything is drawn with `_draw()` so the feel can be tuned before any art exists.
 
-## Running it
+## Install on a phone
+
+Every push to `main` builds a debug APK (GitHub Actions, `.github/workflows/android.yml`) and publishes it on the [latest release](https://github.com/randaladams/fierljeppen/releases/tag/latest).
+
+1. Open that link on the phone and tap **fierljeppen.apk**.
+2. Open the download. Android will ask to allow installs from your browser; allow it once.
+3. Later builds install over the previous one (they share the debug key in `signing/`, which is for testing only — a Play Store release needs its own private key).
+
+## Running it on a computer
 
 Open the folder in Godot 4.7+ and press Play, or:
 
