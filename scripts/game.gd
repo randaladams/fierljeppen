@@ -6,6 +6,7 @@ extends Node2D
 ##   Touch: tap left / right half of the screen alternately to run and to climb
 ##          (thumb pads in the bottom corners show which hand is next).
 ##          Tap the round LET GO button, bottom centre, to release.
+##          "Watch a perfect jump" plays an autopilot demo (doesn't count for best).
 ##   Keys:  Left/A and Right/D alternate, Space = start / let go, R = reset.
 
 enum State { READY, RUN, POLE, FLIGHT, RESULT }
@@ -48,14 +49,40 @@ var _slowmo_timer := 0.0
 var _banner := ""
 var _banner_timer := 0.0
 var _jumps := 0
+var last_distance := 0.0
+
+# --- Demo autopilot ("perfect jump") ---
+# Climb delay and release angle come from tools/optimize_demo.gd, which
+# searches them against this exact game loop. Re-run it after physics changes.
+var demo_run_tap := 0.18            # seconds between running steps
+const DEMO_CLIMB_TAP := 0.25         # one tap per climbing stroke
+var demo_climb_delay := 0.08
+var demo_release_angle := 0.82
+var demo := false
+var _demo_t := 0.0
+var _demo_next := 0.0
+var _demo_hand := 0
+var _demo_caption := ""
+var _pad_flash: Array[float] = [0.0, 0.0]
+var _release_flash := 0.0
 
 
 func _ready() -> void:
 	reset()
 
 
+func start_demo() -> void:
+	reset()
+	demo = true
+	_demo_hand = 0
+	_demo_t = 0.0
+	_demo_next = 0.0
+
+
 func reset() -> void:
 	sim.reset()
+	demo = false
+	_demo_caption = ""
 	state = State.READY
 	run_x = -RUNWAY_LENGTH
 	run_speed = 0.0
@@ -69,11 +96,20 @@ func reset() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch and event.pressed:
 		var size := get_viewport_rect().size
-		if state == State.POLE and _in_release_button(event.position, size):
+		if demo and state != State.RESULT:
+			return   # hands off while the autopilot jumps
+		if _demo_button_visible() and _demo_button_rect(size).has_point(event.position):
+			start_demo()
+		elif state == State.POLE and _in_release_button(event.position, size):
 			_let_go()
 		else:
 			_on_hand(0 if event.position.x < size.x / 2.0 else 1)
 	elif event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_P and _demo_button_visible():
+			start_demo()
+			return
+		if demo and state != State.RESULT:
+			return
 		match event.keycode:
 			KEY_LEFT, KEY_A:
 				_on_hand(0)
@@ -125,6 +161,7 @@ func _let_go(auto := false) -> void:
 		return
 	_auto_released = auto
 	if not auto:
+		_release_flash = 0.35
 		if sim.theta < SWEET_MIN:
 			_banner = "Early!"
 		elif sim.theta <= SWEET_MAX:
@@ -149,13 +186,52 @@ func _process(delta: float) -> void:
 		_tick(dt)
 		_accumulator -= dt
 	_fumble_flash = maxf(0.0, _fumble_flash - delta)
+	_pad_flash[0] = maxf(0.0, _pad_flash[0] - delta)
+	_pad_flash[1] = maxf(0.0, _pad_flash[1] - delta)
+	_release_flash = maxf(0.0, _release_flash - delta)
 	if state == State.RESULT:
 		_result_timer += delta
 	_update_camera(delta)
 	queue_redraw()
 
 
+## Autopilot: presses the same buttons a player would, on physics time,
+## so the demo is deterministic and matches what the player can do.
+func _demo_drive(dt: float) -> void:
+	match state:
+		State.READY:
+			_demo_press(0)
+			_demo_next = demo_run_tap
+			_demo_caption = "RUN:  steady L, R, L, R  (flat-out spins the pole too fast)"
+		State.RUN:
+			_demo_t += dt
+			if _demo_t >= _demo_next:
+				_demo_press(_demo_hand)
+				_demo_next += demo_run_tap
+		State.POLE:
+			_demo_t += dt
+			if sim.theta >= demo_release_angle:
+				_release_flash = 0.35
+				_demo_caption = "LET GO in the green zone!"
+				_let_go()
+			elif _demo_t < demo_climb_delay:
+				_demo_caption = "GRAB:  catch the pole"
+			else:
+				_demo_caption = "CLIMB:  L, R, L, R — one tap per hand-over-hand"
+				if _demo_t >= _demo_next:
+					_demo_press(_demo_hand)
+					_demo_next += DEMO_CLIMB_TAP
+
+
+func _demo_press(hand: int) -> void:
+	_pad_flash[hand] = 0.18
+	_on_hand(hand)
+	_demo_hand = 1 - hand
+
+
 func _tick(dt: float) -> void:
+	if demo:
+		_demo_drive(dt)
 	match state:
 		State.RUN:
 			run_speed = maxf(RUN_V_MIN, run_speed - run_speed * RUN_DECAY * dt)
@@ -168,6 +244,10 @@ func _tick(dt: float) -> void:
 				_slowmo_timer = GRAB_SLOWMO_TIME
 				_banner = "CLIMB!  keep tapping L · R"
 				_banner_timer = 1.4
+				if demo:
+					_demo_t = 0.0
+					_demo_next = demo_climb_delay
+					_banner_timer = 0.0   # the demo caption explains instead
 		State.POLE:
 			sim.step(dt)
 			if _trail.size() == 0 or _trail[-1].distance_to(sim.hand_position()) > 0.15:
@@ -183,7 +263,11 @@ func _tick(dt: float) -> void:
 			_trail.append(jumper_pos)
 			var feet := jumper_pos - Vector2(0, BODY_HANG)
 			if feet.y <= 0.0:
-				if feet.x >= SAND_X:
+				last_distance = feet.x
+				if feet.x >= SAND_X and demo:
+					_demo_caption = ""
+					_finish(true, "DEMO  %.2f m\nDemo jumps don't count toward your best. Your turn!" % feet.x)
+				elif feet.x >= SAND_X:
 					best = maxf(best, feet.x)
 					var tip := "\nYou rode the pole down. Hit LET GO when it turns green." if _auto_released else ""
 					_finish(true, "%.2f m%s" % [feet.x, tip])
@@ -195,6 +279,8 @@ func _tick(dt: float) -> void:
 
 
 func _finish(ok: bool, text: String) -> void:
+	if not ok:
+		last_distance = 0.0
 	state = State.RESULT
 	result_ok = ok
 	result_text = text
@@ -324,8 +410,6 @@ func _draw_hud(size: Vector2, font: Font) -> void:
 			lines.append("Climb: alternate taps.  θ %+.0f°  ω %.2f rad/s  height %.1f m" % [
 				rad_to_deg(sim.theta), sim.omega, sim.s])
 			lines.append("Grab speed %.1f m/s" % _grab_speed)
-		State.FLIGHT:
-			lines.append("...")
 	if best > 0.0:
 		lines.append("Best %.2f m" % best)
 	for line in lines:
@@ -341,8 +425,13 @@ func _draw_hud(size: Vector2, font: Font) -> void:
 		_draw_thumb_pads(size, font, fs)
 	if state == State.POLE:
 		_draw_release_button(size, font, fs)
-	if state == State.READY:
+	_draw_release_press(size)
+	if state == State.READY and not demo:
 		_draw_how_to(size, font, fs)
+	if _demo_button_visible():
+		_draw_demo_button(size, font, fs)
+	if demo and state != State.RESULT:
+		_draw_demo_caption(size, font, fs)
 
 	if _banner_timer > 0.0:
 		var a := clampf(_banner_timer / 0.3, 0.0, 1.0)
@@ -403,8 +492,15 @@ func _draw_thumb_pads(size: Vector2, font: Font, fs: int) -> void:
 		var r := _pad_rect(size, hand)
 		var lit: bool = next == -1 or next == hand
 		var fill := Color(0.18, 0.53, 0.67, 0.25 + 0.3 * pulse) if lit else Color(1, 1, 1, 0.12)
+		var pressed := _pad_flash[hand] > 0.0
+		if pressed:
+			fill = Color(1.0, 0.85, 0.3, 0.85)
 		draw_rect(r, fill)
 		draw_rect(r, Color(1, 1, 1, 0.6 if lit else 0.25), false, 2.0)
+		if pressed:
+			# Ghost fingertip so the press reads as a touch.
+			var k := _pad_flash[hand] / 0.18
+			draw_circle(r.get_center(), r.size.y * (0.22 + 0.12 * (1.0 - k)), Color(1, 1, 1, 0.35 * k + 0.2))
 		var label := "L" if hand == 0 else "R"
 		draw_string(font, r.position + Vector2(0, r.size.y * 0.6), label, HORIZONTAL_ALIGNMENT_CENTER,
 			r.size.x, int(fs * 2.2), Color(1, 1, 1, 0.95 if lit else 0.45))
@@ -427,6 +523,59 @@ func _draw_release_button(size: Vector2, font: Font, fs: int) -> void:
 	draw_circle(c, r, col)
 	draw_arc(c, r, 0, TAU, 48, Color(1, 1, 1, 0.9), 3.0)
 	draw_string(font, c + Vector2(-r, fs * 0.35), label, HORIZONTAL_ALIGNMENT_CENTER, r * 2.0, fs, Color.WHITE)
+
+
+## The LET GO button lingers for a moment after a press, so the demo's
+## release (and the player's) visibly lands.
+func _draw_release_press(size: Vector2) -> void:
+	if _release_flash <= 0.0:
+		return
+	var c := _release_center(size)
+	var r := _release_radius(size)
+	var k := _release_flash / 0.35
+	draw_circle(c, r, Color(0.18, 0.75, 0.44, 0.6 * k))
+	draw_arc(c, r * (1.0 + 0.6 * (1.0 - k)), 0, TAU, 48, Color(1, 1, 1, k), 4.0)
+	draw_circle(c, r * 0.35, Color(1, 1, 1, 0.5 * k))
+
+
+# ---------------------------------------------------------------- demo ---
+
+func _demo_button_visible() -> bool:
+	return (state == State.READY and not demo) or (state == State.RESULT and _result_timer > 0.6)
+
+
+func _demo_button_rect(size: Vector2) -> Rect2:
+	var w := size.x * 0.34
+	var h := size.y * 0.09
+	if state == State.RESULT:
+		# Top-right, so it doesn't cover the jumper on the sand.
+		return Rect2(Vector2(size.x - w - size.x * 0.02, size.y * 0.03), Vector2(w, h))
+	return Rect2(Vector2((size.x - w) / 2.0, size.y * 0.535), Vector2(w, h))
+
+
+func _draw_demo_button(size: Vector2, font: Font, fs: int) -> void:
+	var r := _demo_button_rect(size)
+	draw_rect(r, Color("#14212b"))
+	draw_rect(r, Color(1, 1, 1, 0.8), false, 2.0)
+	# Play triangle
+	var t := r.position + Vector2(r.size.y * 0.45, r.size.y * 0.25)
+	var tri := PackedVector2Array([t, t + Vector2(0, r.size.y * 0.5), t + Vector2(r.size.y * 0.42, r.size.y * 0.25)])
+	draw_colored_polygon(tri, Color("#ffd24a"))
+	draw_string(font, r.position + Vector2(r.size.y * 0.5, r.size.y * 0.5 + fs * 0.35), "Watch a perfect jump",
+		HORIZONTAL_ALIGNMENT_CENTER, r.size.x - r.size.y * 0.5, fs, Color.WHITE)
+
+
+func _draw_demo_caption(size: Vector2, font: Font, fs: int) -> void:
+	var badge := Rect2(Vector2(size.x - fs * 6.5, fs * 0.6), Vector2(fs * 5.5, fs * 1.6))
+	draw_rect(badge, Color("#ffd24a"))
+	draw_string(font, badge.position + Vector2(0, badge.size.y * 0.72), "DEMO", HORIZONTAL_ALIGNMENT_CENTER,
+		badge.size.x, fs, Color("#14212b"))
+	if _demo_caption == "":
+		return
+	var cap := Rect2(Vector2(size.x * 0.12, size.y * 0.15), Vector2(size.x * 0.76, fs * 2.2))
+	draw_rect(cap, Color(0.08, 0.13, 0.17, 0.82))
+	draw_string(font, cap.position + Vector2(0, cap.size.y * 0.66), _demo_caption, HORIZONTAL_ALIGNMENT_CENTER,
+		cap.size.x, fs, Color.WHITE)
 
 
 func _draw_how_to(size: Vector2, font: Font, fs: int) -> void:

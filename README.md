@@ -46,6 +46,7 @@ godot --path . --rendering-driver opengl3 --fixed-fps 60 -s res://tools/capture.
 | Climb | Alternate left / right taps, one hand-over-hand stroke each. | Left/A, Right/D |
 | Let go | Tap the **LET GO** bar at the top. | Space |
 | Reset | Tap after the result. | R |
+| Demo | **Watch a perfect jump** button (start and result screens). Autopilot shows every press; demo distances never count as your best. | P |
 
 ## The physics
 
@@ -77,6 +78,10 @@ All in `scripts/pole_sim.gd` (physics) and the constants at the top of `scripts/
 | `damping` | Mud friction at the base. Later: varies with conditions. |
 | `RUN_TAP_GAIN`, `RUN_DECAY` | How hard it is to build run-up speed. |
 
+## The perfect jump
+
+`tools/optimize_demo.gd` brute-forces the demo's run rhythm, climb delay and release angle against the real game loop. Current optimum: a steady **~5.5 taps/s** run (grab speed 7.4 m/s), climbing almost at once (0.08 s), letting go at **47°** past vertical → **14.12 m**. Tapping flat-out (10+ taps/s) spins the pole too fast to climb and tops out around 10.5 m. Re-run the optimizer after any physics change and copy its values into `scripts/game.gd`.
+
 ## Layout
 
 ```
@@ -85,7 +90,8 @@ scenes/main.tscn        single scene, Node2D with game.gd
 scripts/pole_sim.gd     physics (no rendering, unit-testable)
 scripts/game.gd         state machine, input, debug drawing
 tests/test_pole_sim.gd  headless physics checks
-tools/capture.gd        scripted jump + screenshots
+tools/capture.gd        plays the demo and saves screenshots
+tools/optimize_demo.gd  finds the demo's perfect inputs
 ```
 
 ## Next steps
