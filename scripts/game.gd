@@ -3,11 +3,13 @@ extends Node2D
 ## Everything is drawn with _draw() so the physics can be tuned before any art exists.
 ##
 ## Controls
-##   Touch: tap left / right half of the screen alternately to run and to climb
-##          (thumb pads in the bottom corners show which hand is next).
-##          Tap the round LET GO button, bottom centre, to release.
+##   Touch: run - tap the left / right half of the screen alternately.
+##          climb - hand over hand: press and HOLD one side while that arm
+##          pulls, press the other side, then let go of the first. Repeat.
+##          Letting go with no other grip is a slip (see PoleSim).
+##          Tap the round LET GO button, bottom centre, to release the pole.
 ##          "Watch a perfect jump" plays an autopilot demo (doesn't count for best).
-##   Keys:  Left/A and Right/D alternate, Space = start / let go, R = reset.
+##   Keys:  Left/A and Right/D (hold them to climb), Space = start / let go, R = reset, P = demo.
 
 enum State { READY, RUN, POLE, FLIGHT, RESULT }
 
@@ -54,15 +56,18 @@ var last_distance := 0.0
 # --- Demo autopilot ("perfect jump") ---
 # Climb delay and release angle come from tools/optimize_demo.gd, which
 # searches them against this exact game loop. Re-run it after physics changes.
-var demo_run_tap := 0.18            # seconds between running steps
-const DEMO_CLIMB_TAP := 0.25         # one tap per climbing stroke
-var demo_climb_delay := 0.08
-var demo_release_angle := 0.82
+var demo_run_tap := 0.16            # seconds between running steps
+const DEMO_OVERLAP := 0.04           # grab with the new hand, then let go of the old
+var demo_climb_delay := 0.0
+var demo_release_angle := 0.76
 var demo := false
 var _demo_t := 0.0
 var _demo_next := 0.0
 var _demo_hand := 0
 var _demo_caption := ""
+var _demo_release_at := -1.0
+var _demo_release_hand := -1
+var _touch_hand := {}                # touch index -> hand it pressed
 var _pad_flash: Array[float] = [0.0, 0.0]
 var _release_flash := 0.0
 
@@ -77,6 +82,7 @@ func start_demo() -> void:
 	_demo_hand = 0
 	_demo_t = 0.0
 	_demo_next = 0.0
+	_demo_release_at = -1.0
 
 
 func reset() -> void:
@@ -94,16 +100,34 @@ func reset() -> void:
 # ---------------------------------------------------------------- input ---
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventScreenTouch and event.pressed:
+	var hands_off := demo and state != State.RESULT   # the autopilot is jumping
+	if event is InputEventScreenTouch:
 		var size := get_viewport_rect().size
-		if demo and state != State.RESULT:
-			return   # hands off while the autopilot jumps
+		if not event.pressed:
+			if _touch_hand.has(event.index):
+				var lifted: int = _touch_hand[event.index]
+				_touch_hand.erase(event.index)
+				if not hands_off:
+					_on_hand_up(lifted)
+			return
+		if hands_off:
+			return
 		if _demo_button_visible() and _demo_button_rect(size).has_point(event.position):
 			start_demo()
 		elif state == State.POLE and _in_release_button(event.position, size):
 			_let_go()
 		else:
-			_on_hand(0 if event.position.x < size.x / 2.0 else 1)
+			var hand := 0 if event.position.x < size.x / 2.0 else 1
+			_touch_hand[event.index] = hand
+			_on_hand(hand)
+	elif event is InputEventKey and not event.echo and not event.pressed:
+		if hands_off:
+			return
+		match event.keycode:
+			KEY_LEFT, KEY_A:
+				_on_hand_up(0)
+			KEY_RIGHT, KEY_D:
+				_on_hand_up(1)
 	elif event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_P and _demo_button_visible():
 			start_demo()
@@ -135,11 +159,33 @@ func _on_hand(hand: int) -> void:
 				_fumble_flash = 0.3
 			_last_run_hand = hand
 		State.POLE:
-			if not sim.request_stroke(hand):
-				_fumble_flash = 0.3
+			match sim.press(hand):
+				"fumble":
+					_fumble_flash = 0.3
+				"catch":
+					_show_banner("Caught it!", 0.8, Color("#1e7b34"))
 		State.RESULT:
 			if _result_timer > 0.6:
 				reset()
+
+
+func _on_hand_up(hand: int) -> void:
+	if state != State.POLE:
+		return
+	match sim.release_hand(hand):
+		"slip":
+			_show_banner("Slip!  Your legs caught you", 1.2, Color("#b03a1a"))
+		"drop":
+			_show_banner("Lost your grip!  GRAB!", 2.0, Color("#b03a1a"))
+
+
+var _banner_color := Color(0.08, 0.13, 0.17)
+
+
+func _show_banner(text: String, seconds: float, color := Color(0.08, 0.13, 0.17)) -> void:
+	_banner = text
+	_banner_timer = seconds
+	_banner_color = color
 
 
 func _on_action() -> void:
@@ -162,6 +208,7 @@ func _let_go(auto := false) -> void:
 	_auto_released = auto
 	if not auto:
 		_release_flash = 0.35
+		_banner_color = Color(0.08, 0.13, 0.17)
 		if sim.theta < SWEET_MIN:
 			_banner = "Early!"
 		elif sim.theta <= SWEET_MAX:
@@ -217,10 +264,15 @@ func _demo_drive(dt: float) -> void:
 			elif _demo_t < demo_climb_delay:
 				_demo_caption = "GRAB:  catch the pole"
 			else:
-				_demo_caption = "CLIMB:  L, R, L, R — one tap per hand-over-hand"
+				_demo_caption = "CLIMB:  hold while the arm pulls, grab with the other hand, let go"
 				if _demo_t >= _demo_next:
+					_demo_release_hand = 1 - _demo_hand
+					_demo_release_at = _demo_t + DEMO_OVERLAP
 					_demo_press(_demo_hand)
-					_demo_next += DEMO_CLIMB_TAP
+					_demo_next += sim.stroke_time
+				if _demo_release_at >= 0.0 and _demo_t >= _demo_release_at:
+					_on_hand_up(_demo_release_hand)
+					_demo_release_at = -1.0
 
 
 func _demo_press(hand: int) -> void:
@@ -242,7 +294,8 @@ func _tick(dt: float) -> void:
 				sim.grab(run_speed)
 				state = State.POLE
 				_slowmo_timer = GRAB_SLOWMO_TIME
-				_banner = "CLIMB!  keep tapping L · R"
+				_banner = "CLIMB!  hold L ... grab R ... let go L"
+				_banner_color = Color(0.08, 0.13, 0.17)
 				_banner_timer = 1.4
 				if demo:
 					_demo_t = 0.0
@@ -256,6 +309,10 @@ func _tick(dt: float) -> void:
 				_let_go(true)
 			elif sim.is_falling_back() and sim.theta < sim.start_lean - 0.15:
 				_finish(false, "Splash! The pole fell back.\nRun faster, or climb a little later.")
+			elif sim.fell_in:
+				_finish(false, "Splash! You slid down into the canal.\nGrab with the other hand before you let go.")
+			elif sim.dropping and sim.sliding:
+				_show_banner("Lost your grip!  GRAB!", 0.2, Color("#b03a1a"))
 		State.FLIGHT:
 			sim.step(dt)   # the abandoned pole keeps falling
 			jumper_vel.y -= PoleSim.G * dt
@@ -407,8 +464,10 @@ func _draw_hud(size: Vector2, font: Font) -> void:
 		State.RUN:
 			lines.append("Speed %.1f m/s" % run_speed)
 		State.POLE:
-			lines.append("Climb: alternate taps.  θ %+.0f°  ω %.2f rad/s  height %.1f m" % [
+			lines.append("Climb: hold, grab, let go.  θ %+.0f°  ω %.2f rad/s  height %.1f m" % [
 				rad_to_deg(sim.theta), sim.omega, sim.s])
+			if sim.slips_in_row > 0:
+				lines.append("Slipped — next slip drops you until a clean hand-to-hand switch")
 			lines.append("Grab speed %.1f m/s" % _grab_speed)
 	if best > 0.0:
 		lines.append("Best %.2f m" % best)
@@ -435,8 +494,10 @@ func _draw_hud(size: Vector2, font: Font) -> void:
 
 	if _banner_timer > 0.0:
 		var a := clampf(_banner_timer / 0.3, 0.0, 1.0)
+		var bc := _banner_color
+		bc.a = a
 		draw_string(font, Vector2(0, size.y * 0.3), _banner, HORIZONTAL_ALIGNMENT_CENTER, size.x,
-			int(fs * 1.8), Color(0.08, 0.13, 0.17, a))
+			int(fs * 1.8), bc)
 
 	if _fumble_flash > 0.0:
 		draw_string(font, Vector2(0, size.y * 0.45), "fumble!", HORIZONTAL_ALIGNMENT_CENTER, size.x, fs, Color(0.75, 0.1, 0.1, _fumble_flash / 0.3))
@@ -481,32 +542,66 @@ func _next_hand() -> int:
 		State.RUN:
 			return 1 - _last_run_hand
 		State.POLE:
-			return -1 if sim.last_hand() < 0 else 1 - sim.last_hand()
+			return sim.next_hand()
 	return -1
 
 
 func _draw_thumb_pads(size: Vector2, font: Font, fs: int) -> void:
 	var next := _next_hand()
 	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 90.0)
+	var on_pole := state == State.POLE
 	for hand in [0, 1]:
 		var r := _pad_rect(size, hand)
 		var lit: bool = next == -1 or next == hand
+		var held: bool = on_pole and sim.hand_down[hand]
+		var prog: float = sim.stroke_progress[hand]
+		var pulling: bool = held and sim.active_hand == hand and prog < 1.0
+		var other: int = 1 - hand
+		var other_done: bool = on_pole and sim.hand_down[other] and sim.stroke_progress[other] >= 1.0
+		var other_pulling: bool = on_pole and sim.active_hand == other and sim.stroke_progress[other] < 1.0
+
 		var fill := Color(0.18, 0.53, 0.67, 0.25 + 0.3 * pulse) if lit else Color(1, 1, 1, 0.12)
-		var pressed := _pad_flash[hand] > 0.0
-		if pressed:
+		var verb := "run"
+		if on_pole:
+			if held and pulling:
+				fill = Color(0.18, 0.53, 0.67, 0.85)
+				verb = "pulling..."
+			elif held and other_pulling:
+				fill = Color(0.85, 0.5, 0.17, 0.55 + 0.3 * pulse)
+				verb = "let go"
+			elif held:
+				fill = Color(0.18, 0.53, 0.67, 0.7)
+				verb = "hold"
+			elif lit and other_done:
+				fill = Color(0.18, 0.75, 0.44, 0.45 + 0.4 * pulse)
+				verb = "GRAB!"
+			else:
+				verb = "grab" if lit else ""
+			if sim.sliding:
+				fill = Color(0.75, 0.2, 0.15, 0.4 + 0.4 * pulse)
+				verb = "GRAB!"
+		var tapped := _pad_flash[hand] > 0.0
+		if tapped and not on_pole:
 			fill = Color(1.0, 0.85, 0.3, 0.85)
 		draw_rect(r, fill)
-		draw_rect(r, Color(1, 1, 1, 0.6 if lit else 0.25), false, 2.0)
-		if pressed:
-			# Ghost fingertip so the press reads as a touch.
-			var k := _pad_flash[hand] / 0.18
-			draw_circle(r.get_center(), r.size.y * (0.22 + 0.12 * (1.0 - k)), Color(1, 1, 1, 0.35 * k + 0.2))
+		draw_rect(r, Color(1, 1, 1, 0.6 if lit or held else 0.25), false, 2.0)
+
+		# Arm-pull meter along the top of the pad.
+		if on_pole and (held or (sim.last_pull_hand == hand and prog < 1.0)):
+			var bar := Rect2(r.position + Vector2(6, 6), Vector2((r.size.x - 12) * prog, fs * 0.45))
+			draw_rect(Rect2(r.position + Vector2(6, 6), Vector2(r.size.x - 12, fs * 0.45)), Color(0, 0, 0, 0.25))
+			draw_rect(bar, Color("#3ddc84") if prog >= 1.0 else Color("#ffd24a"))
+
+		# Fingertip: shows a held hand (or a running tap) so presses read clearly.
+		if held or tapped:
+			var k := 1.0 if held else _pad_flash[hand] / 0.18
+			draw_circle(r.get_center(), r.size.y * (0.24 + 0.1 * (1.0 - k)), Color(1, 1, 1, 0.3 + 0.25 * k))
+
 		var label := "L" if hand == 0 else "R"
 		draw_string(font, r.position + Vector2(0, r.size.y * 0.6), label, HORIZONTAL_ALIGNMENT_CENTER,
-			r.size.x, int(fs * 2.2), Color(1, 1, 1, 0.95 if lit else 0.45))
-		var verb := "run" if state != State.POLE else "climb"
-		draw_string(font, r.position + Vector2(0, r.size.y * 0.85), verb, HORIZONTAL_ALIGNMENT_CENTER,
-			r.size.x, fs, Color(1, 1, 1, 0.8 if lit else 0.4))
+			r.size.x, int(fs * 2.2), Color(1, 1, 1, 0.95 if lit or held else 0.45))
+		draw_string(font, r.position + Vector2(0, r.size.y * 0.87), verb, HORIZONTAL_ALIGNMENT_CENTER,
+			r.size.x, fs, Color(1, 1, 1, 0.95 if lit or held else 0.4))
 
 
 func _draw_release_button(size: Vector2, font: Font, fs: int) -> void:
@@ -586,7 +681,7 @@ func _draw_how_to(size: Vector2, font: Font, fs: int) -> void:
 	var ink := Color("#14212b")
 	var steps := [
 		"1   RUN:  tap  L, R, L, R ...",
-		"2   CLIMB:  keep tapping  L, R  on the pole",
+		"2   CLIMB:  hold L while it pulls, grab R, let go L ... repeat",
 		"3   LET GO:  big button, when it turns green",
 	]
 	var y := r.position.y + fs * 1.8

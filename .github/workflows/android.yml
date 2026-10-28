@@ -76,7 +76,9 @@ jobs:
         run: godot --headless --path . --import || true
 
       - name: Physics tests
-        run: godot --headless --path . -s res://tests/test_pole_sim.gd
+        run: |
+          godot --headless --path . -s res://tests/test_pole_sim.gd
+          godot --headless --path . -s res://tests/test_game_slips.gd
 
       - name: Export debug APK
         env:

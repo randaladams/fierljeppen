@@ -29,6 +29,7 @@ Physics checks (headless, no display needed):
 
 ```sh
 godot --headless --path . -s res://tests/test_pole_sim.gd
+godot --headless --path . -s res://tests/test_game_slips.gd
 ```
 
 Scripted jump with screenshots (needs a display, e.g. `xvfb-run`):
@@ -43,7 +44,8 @@ godot --path . --rendering-driver opengl3 --fixed-fps 60 -s res://tools/capture.
 |---|---|---|
 | Run-up | Tap left / right halves alternately. Same side twice = stumble. | Left/A, Right/D |
 | Grab | Automatic at the jetty edge; your run speed becomes pole momentum. | — |
-| Climb | Alternate left / right taps, one hand-over-hand stroke each. | Left/A, Right/D |
+| Climb | Hand over hand: **press and hold** one side while that arm pulls (meter fills, ~0.3 s), **press the other side**, then **let go** of the first. Repeat. It's a rhythm, not a tap race. | Hold Left/A, Right/D |
+| Slips | Let go with no other grip → you slide ~0.5 m and your legs catch you. A second slip before a clean hand-to-hand switch → you **drop** and keep sliding until you grab with either hand (costs time) or hit the water. | |
 | Let go | Tap the **LET GO** bar at the top. | Space |
 | Reset | Tap after the result. | R |
 | Demo | **Watch a perfect jump** button (start and result screens). Autopilot shows every press; demo distances never count as your best. | P |
@@ -60,6 +62,8 @@ I     = M·L²/3 + m·s²
 The middle term is the game. **Climbing brakes the pole.** Climb too early on a slow run and the pole stalls before vertical — you fall back into the canal. Climb too late and you are still low when the pole tips over — you land short. Real fierljeppers pass the dead centre as slowly as they dare to buy climbing time; this is that tension.
 
 - **Grab:** angular momentum from the run is `m·s·v·cos θ`, scaled by `grab_efficiency` (the jump and the grab lose most of it).
+- **Climb:** each held press pulls one arm's length (`stroke_length` 0.6 m over `stroke_time` 0.3 s). Holding past a full pull just hangs — a deliberate pause that lets the pole come over. A pull cut short gains part of a stroke; the same hand twice is a fumble.
+- **Slips feed the physics:** sliding makes `s'` negative, so the same `2·m·s·s'·θ'` term that brakes the pole while climbing *speeds it up* while you slide. A slip near vertical can tip the pole over early.
 - **Release:** launch velocity is the hands' velocity — pole rotation `s·θ'` plus climb speed along the pole. There is a sweet spot around 50° past vertical; letting go earlier or riding it down both lose distance.
 - **Distance:** measured where the feet first touch the sand, from the jetty edge.
 
@@ -74,13 +78,14 @@ All in `scripts/pole_sim.gd` (physics) and the constants at the top of `scripts/
 | `grab_efficiency` | How much run speed becomes rotation. Higher = more forgiving, faster jumps. |
 | `start_lean` | How far the pole leans back at the start. More lean = harder to get over vertical. |
 | `grab_height` | Higher grab = head start on the climb, but more inertia to rotate. |
-| `stroke_length`, `stroke_time` | Climb speed, and how strongly climbing brakes the pole. |
+| `stroke_length`, `stroke_time` | One arm pull: climb speed, rhythm tempo, and how strongly climbing brakes the pole. |
+| `slip_catch_distance`, `leg_friction`, `drop_friction`, `regrab_time` | How costly slips and drops are. |
 | `damping` | Mud friction at the base. Later: varies with conditions. |
 | `RUN_TAP_GAIN`, `RUN_DECAY` | How hard it is to build run-up speed. |
 
 ## The perfect jump
 
-`tools/optimize_demo.gd` brute-forces the demo's run rhythm, climb delay and release angle against the real game loop. Current optimum: a steady **~5.5 taps/s** run (grab speed 7.4 m/s), climbing almost at once (0.08 s), letting go at **47°** past vertical → **14.12 m**. Tapping flat-out (10+ taps/s) spins the pole too fast to climb and tops out around 10.5 m. Re-run the optimizer after any physics change and copy its values into `scripts/game.gd`.
+`tools/optimize_demo.gd` brute-forces the demo's run rhythm, climb delay and release angle against the real game loop. Current optimum: a steady **~6 taps/s** run (grab speed 7.9 m/s), climbing at once with a perfect hold-grab-let-go rhythm, letting go at **44°** past vertical → **14.10 m**. Tapping flat-out (10+ taps/s) spins the pole too fast to climb and tops out around 10.5 m. Re-run the optimizer after any physics change and copy its values into `scripts/game.gd`.
 
 ## Layout
 
@@ -90,6 +95,7 @@ scenes/main.tscn        single scene, Node2D with game.gd
 scripts/pole_sim.gd     physics (no rendering, unit-testable)
 scripts/game.gd         state machine, input, debug drawing
 tests/test_pole_sim.gd  headless physics checks
+tests/test_game_slips.gd  slip / drop / regrab through the game loop
 tools/capture.gd        plays the demo and saves screenshots
 tools/optimize_demo.gd  finds the demo's perfect inputs
 ```
