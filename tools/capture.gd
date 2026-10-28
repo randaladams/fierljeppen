@@ -6,7 +6,7 @@ extends SceneTree
 var game: Node
 var frame := 0
 var hand := 0
-var shots := {40: "run", 150: "grab", 200: "climb", 255: "top", 290: "flight", 420: "result"}
+var shots := {3: "ready", 60: "run", 160: "grab", 230: "climb", 300: "top", 470: "result"}
 
 
 func _initialize() -> void:
@@ -28,4 +28,4 @@ func _process(_delta: float) -> bool:
 		var path := "user://captures/%03d_%s.png" % [frame, shots[frame]]
 		img.save_png(path)
 		print("saved ", ProjectSettings.globalize_path(path), "  state=", game.state)
-	return frame > 430
+	return frame > 480

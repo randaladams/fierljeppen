@@ -67,6 +67,11 @@ func grab(run_speed: float) -> void:
 	omega = grab_efficiency * jumper_mass * s * run_speed * cos(theta) / inertia()
 
 
+## The hand used for the previous stroke (-1 before the first one).
+func last_hand() -> int:
+	return _last_hand
+
+
 ## A climbing tap. Hands must alternate (0 = left, 1 = right).
 ## Returns false for a fumble (same hand twice).
 func request_stroke(hand: int) -> bool:

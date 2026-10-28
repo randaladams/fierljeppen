@@ -3,11 +3,17 @@ extends Node2D
 ## Everything is drawn with _draw() so the physics can be tuned before any art exists.
 ##
 ## Controls
-##   Touch: tap left / right half of the screen alternately to run and to climb.
-##          Tap the LET GO bar at the top to release.
+##   Touch: tap left / right half of the screen alternately to run and to climb
+##          (thumb pads in the bottom corners show which hand is next).
+##          Tap the round LET GO button, bottom centre, to release.
 ##   Keys:  Left/A and Right/D alternate, Space = start / let go, R = reset.
 
 enum State { READY, RUN, POLE, FLIGHT, RESULT }
+
+const SWEET_MIN := 0.7          # release sweet spot, pole angle past vertical (rad)
+const SWEET_MAX := 1.05
+const GRAB_SLOWMO_TIME := 0.9   # real seconds of slow motion after the grab
+const GRAB_SLOWMO_SCALE := 0.3
 
 const PHYSICS_HZ := 240.0
 const RUNWAY_LENGTH := 18.0
@@ -19,7 +25,6 @@ const RUN_V_MAX := 10.0
 const RUN_V_MIN := 2.0
 const RUN_TAP_GAIN := 0.15     # fraction of the gap to max speed per good step
 const RUN_DECAY := 0.25        # speed lost per second, as a fraction of speed
-const RELEASE_BAR := 0.2       # top fraction of the screen that means "let go"
 
 var sim := PoleSim.new()
 var state: State = State.READY
@@ -39,6 +44,10 @@ var _fumble_flash := 0.0
 var _accumulator := 0.0
 var _view_left := -8.0
 var _trail: PackedVector2Array = []
+var _slowmo_timer := 0.0
+var _banner := ""
+var _banner_timer := 0.0
+var _jumps := 0
 
 
 func _ready() -> void:
@@ -60,7 +69,7 @@ func reset() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch and event.pressed:
 		var size := get_viewport_rect().size
-		if state == State.POLE and event.position.y < size.y * RELEASE_BAR:
+		if state == State.POLE and _in_release_button(event.position, size):
 			_let_go()
 		else:
 			_on_hand(0 if event.position.x < size.x / 2.0 else 1)
@@ -108,9 +117,21 @@ func _on_action() -> void:
 				reset()
 
 
-func _let_go() -> void:
+var _auto_released := false
+
+
+func _let_go(auto := false) -> void:
 	if state != State.POLE:
 		return
+	_auto_released = auto
+	if not auto:
+		if sim.theta < SWEET_MIN:
+			_banner = "Early!"
+		elif sim.theta <= SWEET_MAX:
+			_banner = "Good timing!"
+		else:
+			_banner = "A bit late"
+		_banner_timer = 1.0
 	jumper_pos = sim.hand_position()
 	jumper_vel = sim.release()
 	state = State.FLIGHT
@@ -119,7 +140,10 @@ func _let_go() -> void:
 # -------------------------------------------------------------- physics ---
 
 func _process(delta: float) -> void:
-	_accumulator += minf(delta, 0.1)
+	var time_scale := GRAB_SLOWMO_SCALE if _slowmo_timer > 0.0 else 1.0
+	_slowmo_timer = maxf(0.0, _slowmo_timer - delta)
+	_banner_timer = maxf(0.0, _banner_timer - delta)
+	_accumulator += minf(delta, 0.1) * time_scale
 	var dt := 1.0 / PHYSICS_HZ
 	while _accumulator >= dt:
 		_tick(dt)
@@ -141,12 +165,15 @@ func _tick(dt: float) -> void:
 				_grab_speed = run_speed
 				sim.grab(run_speed)
 				state = State.POLE
+				_slowmo_timer = GRAB_SLOWMO_TIME
+				_banner = "CLIMB!  keep tapping L · R"
+				_banner_timer = 1.4
 		State.POLE:
 			sim.step(dt)
 			if _trail.size() == 0 or _trail[-1].distance_to(sim.hand_position()) > 0.15:
 				_trail.append(sim.hand_position())
 			if sim.must_release():
-				_let_go()
+				_let_go(true)
 			elif sim.is_falling_back() and sim.theta < sim.start_lean - 0.15:
 				_finish(false, "Splash! The pole fell back.\nRun faster, or climb a little later.")
 		State.FLIGHT:
@@ -158,7 +185,8 @@ func _tick(dt: float) -> void:
 			if feet.y <= 0.0:
 				if feet.x >= SAND_X:
 					best = maxf(best, feet.x)
-					_finish(true, "%.2f m" % feet.x)
+					var tip := "\nYou rode the pole down. Hit LET GO when it turns green." if _auto_released else ""
+					_finish(true, "%.2f m%s" % [feet.x, tip])
 				else:
 					_finish(false, "Splash! %.2f m — short of the sand.\nClimb higher before letting go." % maxf(feet.x, 0.0))
 		State.RESULT:
@@ -172,6 +200,7 @@ func _finish(ok: bool, text: String) -> void:
 	result_text = text
 	_result_timer = 0.0
 	sim.attached = false
+	_jumps += 1
 
 
 # ------------------------------------------------------------- drawing ---
@@ -182,11 +211,11 @@ var _ground_y := 560.0
 
 func _update_camera(delta: float) -> void:
 	var size := get_viewport_rect().size
-	_ppm = minf(size.x / 32.0, size.y * 0.74 / 14.0)
-	_ground_y = size.y * 0.84
-	var target := -7.0
+	_ppm = minf(size.x / 30.0, size.y * 0.58 / 13.0)
+	_ground_y = size.y * 0.64
+	var target := -10.0
 	if state == State.RUN or state == State.READY:
-		target = minf(-7.0, run_x - 5.0)
+		target = minf(-10.0, run_x - 9.0)
 	_view_left = lerpf(_view_left, target, clampf(delta * 4.0, 0.0, 1.0))
 
 
@@ -205,11 +234,11 @@ func _draw() -> void:
 		Vector2((SAND_X) * _ppm, size.y - water_top)), Color("#3f7891"))
 	# Jetty / runway
 	var jl := w2s(Vector2(-RUNWAY_LENGTH - 30.0, JETTY_HEIGHT))
-	var jr := w2s(Vector2(0, -2.0))
+	var jr := w2s(Vector2(0, -40.0))
 	draw_rect(Rect2(jl, jr - jl), Color("#7a5a3a"))
 	# Sand bed with distance marks
 	var sl := w2s(Vector2(SAND_X, 0.15))
-	var sr := w2s(Vector2(SAND_END + 20.0, -2.0))
+	var sr := w2s(Vector2(SAND_END + 20.0, -40.0))
 	draw_rect(Rect2(sl, sr - sl), Color("#e2c98f"))
 	for m in range(int(SAND_X), int(SAND_END) + 1):
 		var top := w2s(Vector2(m, 0.15))
@@ -225,6 +254,7 @@ func _draw() -> void:
 	# Training overlay: pole angle arc at the base
 	var base := w2s(sim.base_position())
 	draw_arc(base, 1.4 * _ppm, -PI / 2.0 + sim.start_lean, -PI / 2.0 + 1.35, 32, Color(1, 1, 1, 0.35), 2.0)
+	draw_arc(base, 1.4 * _ppm, -PI / 2.0 + SWEET_MIN, -PI / 2.0 + SWEET_MAX, 16, Color("#3ddc84"), 5.0)
 	draw_line(base, base - Vector2(0, 1.6 * _ppm), Color(1, 1, 1, 0.6), 1.5)
 
 	# Trail
@@ -307,10 +337,17 @@ func _draw_hud(size: Vector2, font: Font) -> void:
 		draw_rect(bar, Color(0, 0, 0, 0.15))
 		draw_rect(Rect2(bar.position, Vector2(bar.size.x * run_speed / RUN_V_MAX, bar.size.y)), Color("#2e86ab"))
 
+	if state in [State.READY, State.RUN, State.POLE]:
+		_draw_thumb_pads(size, font, fs)
 	if state == State.POLE:
-		var r := Rect2(Vector2(size.x * 0.3, 0), Vector2(size.x * 0.4, size.y * RELEASE_BAR * 0.6))
-		draw_rect(r, Color(0.9, 0.35, 0.2, 0.25))
-		draw_string(font, r.position + Vector2(0, r.size.y * 0.65), "LET GO", HORIZONTAL_ALIGNMENT_CENTER, r.size.x, fs, Color("#a33a1a"))
+		_draw_release_button(size, font, fs)
+	if state == State.READY:
+		_draw_how_to(size, font, fs)
+
+	if _banner_timer > 0.0:
+		var a := clampf(_banner_timer / 0.3, 0.0, 1.0)
+		draw_string(font, Vector2(0, size.y * 0.3), _banner, HORIZONTAL_ALIGNMENT_CENTER, size.x,
+			int(fs * 1.8), Color(0.08, 0.13, 0.17, a))
 
 	if _fumble_flash > 0.0:
 		draw_string(font, Vector2(0, size.y * 0.45), "fumble!", HORIZONTAL_ALIGNMENT_CENTER, size.x, fs, Color(0.75, 0.1, 0.1, _fumble_flash / 0.3))
@@ -325,3 +362,88 @@ func _draw_hud(size: Vector2, font: Font) -> void:
 			yy += (big if i == 0 else fs) + 10
 		if _result_timer > 0.6:
 			draw_string(font, Vector2(0, yy + 10), "tap to jump again", HORIZONTAL_ALIGNMENT_CENTER, size.x, fs, ink)
+
+
+# ------------------------------------------------------------ controls ---
+
+func _pad_rect(size: Vector2, hand: int) -> Rect2:
+	var w := size.x * 0.22
+	var h := size.y * 0.3
+	var x := size.x * 0.02 if hand == 0 else size.x * 0.98 - w
+	return Rect2(Vector2(x, size.y * 0.97 - h), Vector2(w, h))
+
+
+func _release_center(size: Vector2) -> Vector2:
+	return Vector2(size.x / 2.0, size.y * 0.8)
+
+
+func _release_radius(size: Vector2) -> float:
+	return size.y * 0.14
+
+
+func _in_release_button(pos: Vector2, size: Vector2) -> bool:
+	# Generous hit area: anywhere in the middle third of the lower half.
+	return pos.distance_to(_release_center(size)) < _release_radius(size) * 1.4 \
+		or (pos.y > size.y * 0.5 and absf(pos.x - size.x / 2.0) < size.x / 6.0)
+
+
+func _next_hand() -> int:
+	match state:
+		State.RUN:
+			return 1 - _last_run_hand
+		State.POLE:
+			return -1 if sim.last_hand() < 0 else 1 - sim.last_hand()
+	return -1
+
+
+func _draw_thumb_pads(size: Vector2, font: Font, fs: int) -> void:
+	var next := _next_hand()
+	var pulse := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 90.0)
+	for hand in [0, 1]:
+		var r := _pad_rect(size, hand)
+		var lit: bool = next == -1 or next == hand
+		var fill := Color(0.18, 0.53, 0.67, 0.25 + 0.3 * pulse) if lit else Color(1, 1, 1, 0.12)
+		draw_rect(r, fill)
+		draw_rect(r, Color(1, 1, 1, 0.6 if lit else 0.25), false, 2.0)
+		var label := "L" if hand == 0 else "R"
+		draw_string(font, r.position + Vector2(0, r.size.y * 0.6), label, HORIZONTAL_ALIGNMENT_CENTER,
+			r.size.x, int(fs * 2.2), Color(1, 1, 1, 0.95 if lit else 0.45))
+		var verb := "run" if state != State.POLE else "climb"
+		draw_string(font, r.position + Vector2(0, r.size.y * 0.85), verb, HORIZONTAL_ALIGNMENT_CENTER,
+			r.size.x, fs, Color(1, 1, 1, 0.8 if lit else 0.4))
+
+
+func _draw_release_button(size: Vector2, font: Font, fs: int) -> void:
+	var c := _release_center(size)
+	var r := _release_radius(size)
+	var col := Color("#d9822b")
+	var label := "LET GO"
+	if sim.theta >= SWEET_MIN and sim.theta <= SWEET_MAX:
+		col = Color("#2fbf71")
+		label = "NOW!"
+		r *= 1.0 + 0.08 * sin(Time.get_ticks_msec() / 60.0)
+	elif sim.theta < SWEET_MIN:
+		col = Color(0.85, 0.5, 0.17, 0.55)
+	draw_circle(c, r, col)
+	draw_arc(c, r, 0, TAU, 48, Color(1, 1, 1, 0.9), 3.0)
+	draw_string(font, c + Vector2(-r, fs * 0.35), label, HORIZONTAL_ALIGNMENT_CENTER, r * 2.0, fs, Color.WHITE)
+
+
+func _draw_how_to(size: Vector2, font: Font, fs: int) -> void:
+	var w := size.x * 0.56
+	var h := size.y * 0.42
+	var r := Rect2(Vector2((size.x - w) / 2.0, size.y * 0.1), Vector2(w, h))
+	draw_rect(r, Color(1, 1, 1, 0.88))
+	var ink := Color("#14212b")
+	var steps := [
+		"1   RUN:  tap  L, R, L, R ...",
+		"2   CLIMB:  keep tapping  L, R  on the pole",
+		"3   LET GO:  big button, when it turns green",
+	]
+	var y := r.position.y + fs * 1.8
+	draw_string(font, Vector2(r.position.x, y), "How to jump", HORIZONTAL_ALIGNMENT_CENTER, w, int(fs * 1.3), ink)
+	y += fs * 2.0
+	for s in steps:
+		draw_string(font, Vector2(r.position.x + fs, y), s, HORIZONTAL_ALIGNMENT_LEFT, w - fs * 2, fs, ink)
+		y += fs * 1.7
+	draw_string(font, Vector2(r.position.x, r.end.y - fs * 0.8), "Tap L or R to start", HORIZONTAL_ALIGNMENT_CENTER, w, fs, Color("#2e86ab"))
