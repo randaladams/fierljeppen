@@ -38,6 +38,12 @@ func _process(_delta: float) -> bool:
 			_shot("grab")
 		if game.sim.theta > 0.2:
 			_shot("climb")
+		# A pull early, middle and late, to check the arm animation.
+		if game.sim.active_hand >= 0 and pole_frames > 60:
+			var p: float = game.sim.stroke_progress[game.sim.active_hand]
+			if p > 0.05 and p < 0.15: _shot("pull_start")
+			if p > 0.45 and p < 0.55 and taken.has("pull_start"): _shot("pull_mid")
+			if p > 0.85 and p < 0.98 and taken.has("pull_mid"): _shot("pull_end")
 	if game.state == game.State.FLIGHT:
 		_shot("release")
 	if game.state == game.State.RESULT and game._result_timer > 0.7:

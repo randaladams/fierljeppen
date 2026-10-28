@@ -6,7 +6,7 @@ extends SceneTree
 
 const DT := 1.0 / 240.0
 const BODY_HANG := 2.05
-const SAND_X := 8.0
+const SAND_X := 12.0
 const OVERLAP := 0.04   # perfect rhythm: grab with the new hand, then let go of the old
 
 var failures := 0
@@ -49,7 +49,7 @@ func jump(v: float, delay: float, release_angle: float) -> Dictionary:
 				vel.y -= PoleSim.G * DT
 				pos += vel * DT
 			var outcome := "land" if pos.x >= SAND_X else "short"
-			return {"outcome": outcome, "dist": pos.x, "height": sim.s}
+			return {"outcome": outcome, "dist": pos.x, "height": sim.s, "t": t}
 	return {"outcome": "timeout"}
 
 
@@ -67,24 +67,26 @@ func check(name: String, cond: bool, info: Variant) -> void:
 
 
 func _init() -> void:
-	# --- Whole jumps: the stall / short / release-timing window ---
-	var r := jump(8.0, 0.0, 0.9)
+	# --- Whole jumps: real timing, the stall / short / release window ---
+	var r := jump(8.5, 0.0, 0.74)
 	check("good jump lands on the sand", r.outcome == "land", r)
 	var good: float = r.get("dist", 0.0)
+	check("a perfect-rhythm jump goes 16-21 m (records: 18-22 m)", good > 16.0 and good < 21.0, good)
+	check("the pole phase takes 3-6 s like a real jump", r.get("t", 0.0) > 3.0 and r.get("t", 0.0) < 6.0, r.get("t", 0.0))
 
-	r = jump(6.0, 0.0, 0.9)
-	check("slow run + instant climb stalls the pole", r.outcome == "back", r)
+	r = jump(7.0, 0.0, 0.8)
+	check("slowish run + instant climb stalls the pole", r.outcome == "back", r)
 
-	r = jump(6.0, 1.0, 0.9)
-	check("slow run is rescued by waiting before climbing", r.outcome == "land", r)
+	r = jump(7.0, 0.9, 0.8)
+	check("slowish run is rescued by waiting before climbing", r.outcome == "land", r)
 
-	r = jump(9.0, 1.5, 0.9)
+	r = jump(9.5, 1.5, 0.8)
 	check("fast run + late climb lands short", r.outcome == "short", r)
 
-	var early := jump(8.0, 0.0, 0.3)
+	var early := jump(8.5, 0.0, 0.3)
 	check("letting go too early is worse", early.get("dist", 0.0) < good, early)
 
-	var late := jump(8.0, 0.0, 1.3)
+	var late := jump(8.5, 0.0, 1.3)
 	check("letting go at the last moment is worse than the sweet spot", late.get("dist", 0.0) < good, late)
 
 	# --- Hand over hand ---
@@ -105,7 +107,8 @@ func _init() -> void:
 	sim = new_sim(7.0)
 	sim.press(1)
 	run_for(sim, 0.4)
-	check("same hand twice is a fumble", sim.release_hand(1) == "" and sim.press(1) == "fumble", sim.s)
+	sim.release_hand(1)
+	check("same hand twice is a fumble", sim.press(1) == "fumble", sim.s)
 
 	# --- Slips ---
 	sim = new_sim(7.0)
@@ -113,15 +116,17 @@ func _init() -> void:
 	sim.press(0); run_for(sim, 0.4)     # clean transfer: R still held
 	sim.release_hand(1); run_for(sim, 0.05)
 	var before := sim.s
-	var ev := sim.release_hand(0)       # nothing left holding on
+	sim.release_hand(0)                 # nothing left holding on
 	run_for(sim, 1.5)
+	var ev := sim.take_event()
 	check("first slip: legs catch after about half a metre",
 		ev == "slip" and not sim.sliding and absf(before - sim.s - sim.slip_catch_distance) < 0.08,
 		{"event": ev, "lost": before - sim.s})
 
 	sim.press(1); run_for(sim, 0.4)
-	ev = sim.release_hand(1)            # second slip, no clean transfer in between
-	run_for(sim, 0.3)
+	sim.release_hand(1)                 # second slip, no clean transfer in between
+	run_for(sim, sim.switch_grace + 0.3)
+	ev = sim.take_event()
 	check("second slip drops: still sliding after the leg-catch distance",
 		ev == "drop" and sim.sliding and sim.dropping, {"event": ev, "s": sim.s})
 
@@ -143,14 +148,25 @@ func _init() -> void:
 	check("an uncaught drop ends in the canal", sim.fell_in, sim.s)
 
 	# --- Sliding feeds the pole physics ---
-	var a := new_sim(7.0)
-	var b := new_sim(7.0)
+	var a := new_sim(8.5)
+	var b := new_sim(8.5)
 	for x in [a, b]:
 		x.press(1); run_for(x, 0.4); x.release_hand(1)
 		x.press(0); run_for(x, 0.4)
 	b.release_hand(0)                   # b slips, a keeps holding
-	run_for(a, 0.3); run_for(b, 0.3)
+	run_for(a, b.switch_grace + 0.3); run_for(b, b.switch_grace + 0.3)
 	check("sliding down makes the pole rotate faster", b.omega > a.omega, {"holding": a.omega, "sliding": b.omega})
+
+	# --- Forgiving switch ---
+	sim = new_sim(7.0)
+	sim.press(1); run_for(sim, 0.5); sim.release_hand(1)
+	sim.press(0); run_for(sim, 0.5)
+	sim.release_hand(0)                 # lift L...
+	run_for(sim, sim.switch_grace * 0.6)
+	sim.press(1)                        # ...and press R quickly
+	run_for(sim, 0.5)
+	check("lift-then-press within the switch window is not a slip",
+		sim.slips_in_row == 0 and not sim.sliding and sim.take_event() == "", sim.slips_in_row)
 
 	print("RESULT: %d failure(s)" % failures)
 	quit(1 if failures > 0 else 0)

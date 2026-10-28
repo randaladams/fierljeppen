@@ -13,16 +13,17 @@ extends Node2D
 
 enum State { READY, RUN, POLE, FLIGHT, RESULT }
 
-const SWEET_MIN := 0.7          # release sweet spot, pole angle past vertical (rad)
-const SWEET_MAX := 1.05
-const GRAB_SLOWMO_TIME := 0.9   # real seconds of slow motion after the grab
+const SWEET_MIN := 0.6          # release sweet spot, pole angle past vertical (rad)
+const SWEET_MAX := 0.95
+const HAND_COL: Array[Color] = [Color("#2e86ab"), Color("#e8833a")]   # L blue, R orange
+const GRAB_SLOWMO_TIME := 0.6   # real seconds of slow motion after the grab
 const GRAB_SLOWMO_SCALE := 0.3
 
 const PHYSICS_HZ := 240.0
 const RUNWAY_LENGTH := 18.0
 const JETTY_HEIGHT := 0.8
-const SAND_X := 8.0
-const SAND_END := 26.0
+const SAND_X := 12.0           # canal width: real ones are ~12 m
+const SAND_END := 30.0
 const BODY_HANG := 2.05        # hands to feet while hanging, metres
 const RUN_V_MAX := 10.0
 const RUN_V_MIN := 2.0
@@ -56,10 +57,10 @@ var last_distance := 0.0
 # --- Demo autopilot ("perfect jump") ---
 # Climb delay and release angle come from tools/optimize_demo.gd, which
 # searches them against this exact game loop. Re-run it after physics changes.
-var demo_run_tap := 0.16            # seconds between running steps
+var demo_run_tap := 0.12            # seconds between running steps
 const DEMO_OVERLAP := 0.04           # grab with the new hand, then let go of the old
-var demo_climb_delay := 0.0
-var demo_release_angle := 0.76
+var demo_climb_delay := 0.2
+var demo_release_angle := 0.74
 var demo := false
 var _demo_t := 0.0
 var _demo_next := 0.0
@@ -172,11 +173,7 @@ func _on_hand(hand: int) -> void:
 func _on_hand_up(hand: int) -> void:
 	if state != State.POLE:
 		return
-	match sim.release_hand(hand):
-		"slip":
-			_show_banner("Slip!  Your legs caught you", 1.2, Color("#b03a1a"))
-		"drop":
-			_show_banner("Lost your grip!  GRAB!", 2.0, Color("#b03a1a"))
+	sim.release_hand(hand)   # a slip, if any, arrives after the switch window
 
 
 var _banner_color := Color(0.08, 0.13, 0.17)
@@ -249,7 +246,7 @@ func _demo_drive(dt: float) -> void:
 		State.READY:
 			_demo_press(0)
 			_demo_next = demo_run_tap
-			_demo_caption = "RUN:  steady L, R, L, R  (flat-out spins the pole too fast)"
+			_demo_caption = "RUN:  L, R, L, R  at a steady pace"
 		State.RUN:
 			_demo_t += dt
 			if _demo_t >= _demo_next:
@@ -262,9 +259,9 @@ func _demo_drive(dt: float) -> void:
 				_demo_caption = "LET GO in the green zone!"
 				_let_go()
 			elif _demo_t < demo_climb_delay:
-				_demo_caption = "GRAB:  catch the pole"
+				_demo_caption = "GRAB:  hang on a moment as the pole starts to swing"
 			else:
-				_demo_caption = "CLIMB:  hold while the arm pulls, grab with the other hand, let go"
+				_demo_caption = "CLIMB:  hold while the arm bends, grab with the other, let go"
 				if _demo_t >= _demo_next:
 					_demo_release_hand = 1 - _demo_hand
 					_demo_release_at = _demo_t + DEMO_OVERLAP
@@ -303,6 +300,11 @@ func _tick(dt: float) -> void:
 					_banner_timer = 0.0   # the demo caption explains instead
 		State.POLE:
 			sim.step(dt)
+			match sim.take_event():
+				"slip":
+					_show_banner("Slip!  Your legs caught you", 1.2, Color("#b03a1a"))
+				"drop":
+					_show_banner("Lost your grip!  GRAB!", 2.0, Color("#b03a1a"))
 			if _trail.size() == 0 or _trail[-1].distance_to(sim.hand_position()) > 0.15:
 				_trail.append(sim.hand_position())
 			if sim.must_release():
@@ -354,11 +356,11 @@ var _ground_y := 560.0
 
 func _update_camera(delta: float) -> void:
 	var size := get_viewport_rect().size
-	_ppm = minf(size.x / 30.0, size.y * 0.58 / 13.0)
+	_ppm = minf(size.x / 32.0, size.y * 0.58 / 13.6)
 	_ground_y = size.y * 0.64
-	var target := -10.0
+	var target := -5.0
 	if state == State.RUN or state == State.READY:
-		target = minf(-10.0, run_x - 9.0)
+		target = minf(-5.0, run_x - 9.0)
 	_view_left = lerpf(_view_left, target, clampf(delta * 4.0, 0.0, 1.0))
 
 
@@ -416,14 +418,99 @@ func _draw() -> void:
 		State.READY, State.RUN:
 			_draw_runner(Vector2(run_x, JETTY_HEIGHT))
 		State.POLE:
-			_draw_hanging(sim.hand_position())
+			_draw_climber()
 		State.FLIGHT:
 			_draw_hanging(jumper_pos)
 		State.RESULT:
 			if result_ok:
 				_draw_hanging(jumper_pos)
 
+	_draw_climb_cam(size, font)
 	_draw_hud(size, font)
+
+
+## The jumper on the pole: body along the pole, legs wrapped round it, and
+## two arms coloured like the thumb pads. A pressed hand reaches up and grips;
+## while it pulls, the arm visibly bends as the body rises to it.
+func _draw_climber() -> void:
+	var u := Vector2(sin(sim.theta), cos(sim.theta))        # up the pole
+	var n := Vector2(-cos(sim.theta), sin(sim.theta))       # off the pole, runway side
+	var at := func(d: float, off: float) -> Vector2:
+		return w2s(sim.point_on_pole(sim.s + d) + n * off)
+	var body := Color("#1b3a5c")
+	var w := maxf(2.5, 0.09 * _ppm)
+	var shoulder: Vector2 = at.call(-0.15, 0.24)
+	var hip: Vector2 = at.call(-0.85, 0.3)
+	# Far arm (R) behind the body, near arm (L) in front.
+	_draw_arm(1, shoulder, at, w * 1.5)
+	draw_line(at.call(-0.85, 0.3), at.call(-1.2, 0.42), body, w)       # thigh
+	draw_line(at.call(-1.2, 0.42), at.call(-1.55, 0.05), body, w)      # shin, wrapped on the pole
+	draw_line(hip, at.call(-1.15, 0.22), body, w)
+	draw_line(at.call(-1.15, 0.22), at.call(-1.65, 0.02), body, w)
+	draw_line(shoulder, hip, body, w * 1.3)
+	draw_circle(at.call(0.0, 0.5), 0.16 * _ppm, body)
+	_draw_arm(0, shoulder, at, w * 1.5)
+	var _unused := u
+
+
+func _draw_arm(hand: int, shoulder: Vector2, at: Callable, w: float) -> void:
+	var col: Color = HAND_COL[hand]
+	var reach := 0.0          # where along the pole (from the shoulder) the hand is
+	var off := 0.04           # how far off the pole the hand is
+	var other := 1 - hand
+	var other_prog: float = sim.stroke_progress[other]
+	var other_pulling := sim.active_hand == other and other_prog < 1.0
+	if sim.sliding:
+		reach = 0.9           # clawing at the pole as you slide
+		off = 0.35
+	elif sim.grips(hand):
+		var pulling := sim.active_hand == hand and sim.stroke_progress[hand] < 1.0
+		if pulling:
+			reach = 1.05 - 0.8 * sim.stroke_progress[hand]   # straight arm -> bent arm
+		else:
+			reach = 0.25 + 0.08 * hand                        # holding, arm bent
+	elif other_pulling:
+		# Free hand: drops to the chest, then rises to reach above as the
+		# other arm finishes its pull. When it's up high: press!
+		reach = lerpf(-0.1, 1.0, smoothstep(0.35, 1.0, other_prog))
+		off = lerpf(0.4, 0.14, smoothstep(0.35, 1.0, other_prog))
+	else:
+		reach = 1.0           # waiting up high, ready to grab
+		off = 0.14
+	var hand_pt: Vector2 = at.call(-0.15 + reach, off)
+	var elbow_out := 0.18 + 0.32 * clampf(1.0 - absf(reach) / 1.05, 0.0, 1.0)
+	var elbow: Vector2 = at.call(-0.15 + reach * 0.45, 0.24 + elbow_out)
+	draw_line(shoulder, elbow, col, w)
+	draw_line(elbow, hand_pt, col, w)
+	draw_circle(elbow, w * 0.5, col)
+	draw_circle(hand_pt, w * 1.0, col)
+	draw_circle(hand_pt, w * 0.45, Color(1, 1, 1, 0.8) if sim.grips(hand) else col)
+
+
+## Zoomed view of the climber while on the pole, so arm movement is easy to
+## match with presses.
+func _draw_climb_cam(size: Vector2, font: Font) -> void:
+	if state != State.POLE:
+		return
+	var r := Rect2(Vector2(size.x * 0.64, size.y * 0.24), Vector2(size.x * 0.34, size.y * 0.38))
+	draw_rect(r, Color(0.93, 0.96, 0.98, 0.94))
+	draw_rect(r, Color(0.08, 0.13, 0.17, 0.5), false, 2.0)
+	var fs := int(clampf(size.y / 40.0, 11.0, 22.0))
+	draw_string(font, r.position + Vector2(8, fs + 4), "CLIMB CAM", HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0.08, 0.13, 0.17, 0.6))
+	var saved := [_ppm, _view_left, _ground_y]
+	var k := r.size.y * 0.9 / 2.6
+	var focus := sim.point_on_pole(sim.s - 0.2)
+	var c := r.get_center()
+	_ppm = k
+	_view_left = focus.x - c.x / k
+	_ground_y = c.y + focus.y * k
+	var lo := maxf(0.0, sim.s - 1.5)
+	var hi := minf(sim.pole_length, sim.s + 1.1)
+	draw_line(w2s(sim.point_on_pole(lo)), w2s(sim.point_on_pole(hi)), Color("#222831"), maxf(4.0, 0.07 * k))
+	_draw_climber()
+	_ppm = saved[0]
+	_view_left = saved[1]
+	_ground_y = saved[2]
 
 
 func _draw_runner(feet: Vector2) -> void:
@@ -560,17 +647,18 @@ func _draw_thumb_pads(size: Vector2, font: Font, fs: int) -> void:
 		var other_done: bool = on_pole and sim.hand_down[other] and sim.stroke_progress[other] >= 1.0
 		var other_pulling: bool = on_pole and sim.active_hand == other and sim.stroke_progress[other] < 1.0
 
-		var fill := Color(0.18, 0.53, 0.67, 0.25 + 0.3 * pulse) if lit else Color(1, 1, 1, 0.12)
+		var hc: Color = HAND_COL[hand]
+		var fill := Color(hc, 0.3 + 0.3 * pulse) if lit else Color(1, 1, 1, 0.12)
 		var verb := "run"
 		if on_pole:
 			if held and pulling:
-				fill = Color(0.18, 0.53, 0.67, 0.85)
+				fill = Color(hc, 0.9)
 				verb = "pulling..."
 			elif held and other_pulling:
-				fill = Color(0.85, 0.5, 0.17, 0.55 + 0.3 * pulse)
+				fill = Color(hc, 0.4 + 0.3 * pulse)
 				verb = "let go"
 			elif held:
-				fill = Color(0.18, 0.53, 0.67, 0.7)
+				fill = Color(hc, 0.7)
 				verb = "hold"
 			elif lit and other_done:
 				fill = Color(0.18, 0.75, 0.44, 0.45 + 0.4 * pulse)
@@ -681,7 +769,7 @@ func _draw_how_to(size: Vector2, font: Font, fs: int) -> void:
 	var ink := Color("#14212b")
 	var steps := [
 		"1   RUN:  tap  L, R, L, R ...",
-		"2   CLIMB:  hold L while it pulls, grab R, let go L ... repeat",
+		"2   CLIMB:  hold one side; when the other arm reaches up, press it",
 		"3   LET GO:  big button, when it turns green",
 	]
 	var y := r.position.y + fs * 1.8

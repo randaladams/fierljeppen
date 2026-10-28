@@ -44,8 +44,8 @@ godot --path . --rendering-driver opengl3 --fixed-fps 60 -s res://tools/capture.
 |---|---|---|
 | Run-up | Tap left / right halves alternately. Same side twice = stumble. | Left/A, Right/D |
 | Grab | Automatic at the jetty edge; your run speed becomes pole momentum. | — |
-| Climb | Hand over hand: **press and hold** one side while that arm pulls (meter fills, ~0.3 s), **press the other side**, then **let go** of the first. Repeat. It's a rhythm, not a tap race. | Hold Left/A, Right/D |
-| Slips | Let go with no other grip → you slide ~0.5 m and your legs catch you. A second slip before a clean hand-to-hand switch → you **drop** and keep sliding until you grab with either hand (costs time) or hit the water. | |
+| Climb | Hand over hand: **press and hold** one side while that arm pulls (~0.45 s). Watch the **climb cam**: the arms are coloured like the pads (L blue, R orange). The pulling arm starts straight and bends; the free arm drops to the chest, then reaches up high — that's when to **press the other side**, then let go of the first. Lifting one thumb and pressing the other within 0.2 s also counts as a switch. | Hold Left/A, Right/D |
+| Slips | Let go with no other grip for more than 0.2 s → you slide ~0.5 m and your legs catch you. A second slip before a clean hand-to-hand switch → you **drop** and keep sliding until you grab with either hand (costs time) or hit the water. | |
 | Let go | Tap the **LET GO** bar at the top. | Space |
 | Reset | Tap after the result. | R |
 | Demo | **Watch a perfect jump** button (start and result screens). Autopilot shows every press; demo distances never count as your best. | P |
@@ -62,7 +62,9 @@ I     = M·L²/3 + m·s²
 The middle term is the game. **Climbing brakes the pole.** Climb too early on a slow run and the pole stalls before vertical — you fall back into the canal. Climb too late and you are still low when the pole tips over — you land short. Real fierljeppers pass the dead centre as slowly as they dare to buy climbing time; this is that tension.
 
 - **Grab:** angular momentum from the run is `m·s·v·cos θ`, scaled by `grab_efficiency` (the jump and the grab lose most of it).
-- **Climb:** each held press pulls one arm's length (`stroke_length` 0.6 m over `stroke_time` 0.3 s). Holding past a full pull just hangs — a deliberate pause that lets the pole come over. A pull cut short gains part of a stroke; the same hand twice is a fumble.
+- **Real proportions:** 13 m pole, 2 m out from the jetty, **12 m canal**, sand marked to 30 m. A good jump spends **4–6 s** on the pole (real jumps: 3–4 s of climbing); a perfect one lands about **20 m** (Dutch records: 18.19 m women, 22.21 m seniors).
+- **Dead centre:** near vertical the pole meets extra drag that grows with its speed (`centre_drag`, `centre_width`). It tames a fast pole without trapping a slow one, so the outcome isn't a knife-edge on run speed — any run from ~6.5 to 9.5 m/s can reach ~20 m if the climb is timed to it (slower run → wait a beat; faster run → climb at once). At the very top the jumper throws their weight forward (`top_lean`) and pushes off on release (`push_off`).
+- **Climb:** each held press pulls `stroke_length` 1.0 m (arms and legs) over `stroke_time` 0.45 s. Holding past a full pull just hangs — a deliberate pause that lets the pole come over. A pull cut short gains part of a stroke; the same hand twice is a fumble.
 - **Slips feed the physics:** sliding makes `s'` negative, so the same `2·m·s·s'·θ'` term that brakes the pole while climbing *speeds it up* while you slide. A slip near vertical can tip the pole over early.
 - **Release:** launch velocity is the hands' velocity — pole rotation `s·θ'` plus climb speed along the pole. There is a sweet spot around 50° past vertical; letting go earlier or riding it down both lose distance.
 - **Distance:** measured where the feet first touch the sand, from the jetty edge.
@@ -85,7 +87,7 @@ All in `scripts/pole_sim.gd` (physics) and the constants at the top of `scripts/
 
 ## The perfect jump
 
-`tools/optimize_demo.gd` brute-forces the demo's run rhythm, climb delay and release angle against the real game loop. Current optimum: a steady **~6 taps/s** run (grab speed 7.9 m/s), climbing at once with a perfect hold-grab-let-go rhythm, letting go at **44°** past vertical → **14.10 m**. Tapping flat-out (10+ taps/s) spins the pole too fast to climb and tops out around 10.5 m. Re-run the optimizer after any physics change and copy its values into `scripts/game.gd`.
+`tools/optimize_demo.gd` brute-forces the demo's run rhythm, climb delay and release angle against the real game loop. Current optimum: an ~8 taps/s run (grab speed 8.4 m/s), a 0.2 s pause after the grab, a perfect hold-grab-let-go rhythm, letting go at **42°** past vertical → **19.91 m**. Every run pace from 5 to 12 taps/s can reach ~19.7–19.9 m with the right climb timing. Re-run the optimizer after any physics change and copy its values into `scripts/game.gd`.
 
 ## Layout
 

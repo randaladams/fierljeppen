@@ -8,15 +8,21 @@ extends RefCounted
 ## runway, positive leans forward toward the sand.
 ##
 ## Equation of motion (jumper as a point mass m at distance s up the pole):
-##     d/dt (I * omega) = g * sin(theta) * (M*L/2 + m*s)  - damping
+##     d/dt (I * omega) = g * sin(theta) * (M*L/2 + m*s)  - drag
 ##     I = M*L^2/3 + m*s^2
-## Expanding gives  I*omega' = torque - 2*m*s*s'*omega - c*I*omega
+## Expanding gives  I*omega' = torque - 2*m*s*s'*omega - c(theta)*I*omega
+## c(theta) is mud friction plus a "dead centre" drag near vertical (it
+## grows with the pole's speed): real
+## jumpers hang the pole at the top to buy climbing time. It is what turns
+## a knife-edge inverted pendulum into a playable 3-5 s climb.
 ## The 2*m*s*s'*omega term is the heart of the game: climbing (s' > 0)
 ## brakes the pole, and sliding down (s' < 0) speeds it up.
 ##
 ## Climbing is hand over hand: press a hand to grip, hold it to pull
 ## (one arm's length per stroke), then grip with the other hand and let go
-## of the first. Letting go with no grip left is a slip:
+## of the first. Lifting one thumb and pressing the other within
+## switch_grace seconds counts as a switch. Letting go with no grip left
+## for longer is a slip:
 ##   1st slip  - slide ~half a metre, then the legs catch you.
 ##   2nd slip  - (before a clean hand-to-hand transfer) you drop and keep
 ##               sliding until a hand grabs the pole again, or you hit the water.
@@ -24,16 +30,21 @@ extends RefCounted
 const G := 9.81
 
 # --- Tunables (see README for what each one does to the feel) ---
-var pole_length := 12.0       # L, metres
+var pole_length := 13.0       # L, metres (real poles: 8-13 m)
 var pole_mass := 4.0          # M, kg (carbon pole)
 var jumper_mass := 75.0       # m, kg
-var base_x := 1.0             # pole base distance from the jetty edge
-var start_lean := -0.35       # initial lean back toward the runway, rad
+var base_x := 2.0             # pole base distance from the jetty edge
+var start_lean := -0.30       # initial lean back toward the runway, rad
 var grab_height := 2.6        # where along the pole the jumper grabs, m
-var grab_efficiency := 0.4    # fraction of run momentum the pole receives
+var grab_efficiency := 0.52   # fraction of run momentum the pole receives
 var damping := 0.05           # mud / base friction, 1/s
-var stroke_length := 0.6      # metres gained by one full arm pull
-var stroke_time := 0.3        # seconds for one full arm pull
+var centre_drag := 6.0        # extra drag at dead centre (vertical), scales with speed
+var centre_width := 0.25      # how wide that zone is, rad (~14 deg)
+var stroke_length := 1.0      # metres gained by one full pull (arms + legs)
+var stroke_time := 0.45       # seconds for one full pull
+var switch_grace := 0.2       # lift one thumb, press the other within this: no slip
+var push_off := 3.0           # leg push off the pole on release, m/s
+var top_lean := 0.5           # at the top, the jumper throws their weight this far forward, m
 var top_margin := 0.6         # how close to the tip the jumper can get
 var forced_release_angle := 1.35  # pole nearly flat: jumper drops off
 var slip_catch_distance := 0.5    # legs catch you after this much slide
@@ -60,6 +71,8 @@ var _virtual_grip: Array[bool] = [false, false]  # the initial grab, holding in 
 var _legs := false            # legs wrapped round the pole after a slip; let go once you climb
 var _slide_distance := 0.0
 var _regrab_timer := 0.0
+var _grace := 0.0             # >0: no grip, but still inside the switch window
+var _event := ""              # "slip" / "drop", read once by take_event()
 
 
 func reset() -> void:
@@ -80,6 +93,8 @@ func reset() -> void:
 	_legs = false
 	_slide_distance = 0.0
 	_regrab_timer = 0.0
+	_grace = 0.0
+	_event = ""
 
 
 func inertia() -> float:
@@ -100,6 +115,11 @@ func grab(run_speed: float) -> void:
 	_virtual_grip = [true, true]
 
 
+## True when this hand is on the pole (pressed, or still holding from the grab).
+func grips(hand: int) -> bool:
+	return hand_down[hand] or _virtual_grip[hand]
+
+
 func has_grip() -> bool:
 	return hand_down[0] or hand_down[1] or _virtual_grip[0] or _virtual_grip[1] or _legs
 
@@ -118,6 +138,7 @@ func press(hand: int) -> String:
 	hand_down[hand] = true
 	_virtual_grip[hand] = false
 	_legs = false   # unwrap the legs to climb again
+	_grace = 0.0    # a quick switch: caught in time
 	if sliding:
 		# Grabbing during a slide arrests it, but the arm takes a moment.
 		sliding = false
@@ -134,17 +155,23 @@ func press(hand: int) -> String:
 	return "grip"
 
 
-## Player releases a hand. Returns "slip", "drop" or "".
-func release_hand(hand: int) -> String:
+## Player releases a hand. With nothing else holding on, a slip follows
+## unless the other hand presses within switch_grace (see take_event()).
+func release_hand(hand: int) -> void:
 	if not attached or not hand_down[hand]:
-		return ""
+		return
 	hand_down[hand] = false
 	if active_hand == hand:
 		active_hand = -1   # a pull cut short only gains part of a stroke
 	if not has_grip() and not sliding:
-		_slip()
-		return "drop" if dropping else "slip"
-	return ""
+		_grace = switch_grace
+
+
+## "slip" or "drop" once, after one happens; "" otherwise.
+func take_event() -> String:
+	var e := _event
+	_event = ""
+	return e
 
 
 func _start_pull(hand: int) -> void:
@@ -160,6 +187,7 @@ func _slip() -> void:
 	_slide_distance = 0.0
 	s_dot = 0.0
 	active_hand = -1
+	_event = "drop" if dropping else "slip"
 
 
 func step(dt: float) -> void:
@@ -171,7 +199,12 @@ func step(dt: float) -> void:
 	var m := jumper_mass if attached else 0.0
 	var i := inertia()
 	var torque := G * sin(theta) * (pole_mass * pole_length / 2.0 + m * s)
-	var omega_dot := (torque - 2.0 * m * s * s_dot * omega - damping * omega * i) / i
+	if attached and s >= max_climb() - 0.05:
+		torque += G * m * top_lean   # nothing left to climb: lean the pole over
+	# Dead-centre drag grows with speed, so a fast pole is tamed near vertical
+	# but a slow one is not trapped there.
+	var drag := damping + centre_drag * absf(omega) * exp(-pow(theta / centre_width, 2.0))
+	var omega_dot := (torque - 2.0 * m * s * s_dot * omega - drag * omega * i) / i
 	omega += omega_dot * dt
 	theta += omega * dt
 
@@ -182,6 +215,12 @@ func step(dt: float) -> void:
 
 
 func _step_climber(dt: float) -> void:
+	if _grace > 0.0:
+		_grace -= dt
+		s_dot = 0.0
+		if _grace <= 0.0 and not has_grip():
+			_slip()
+		return
 	if sliding:
 		# Gravity along the pole, partly resisted by legs (or not, on a drop).
 		var friction := drop_friction if dropping else leg_friction
@@ -244,9 +283,10 @@ func hand_velocity() -> Vector2:
 	return tangential + along
 
 
-## Let go. Returns the jumper's launch velocity; the pole carries on alone.
+## Let go. Returns the jumper's launch velocity (pole motion plus a leg
+## push off along the pole); the pole carries on alone.
 func release() -> Vector2:
-	var v := hand_velocity()
+	var v := hand_velocity() + Vector2(sin(theta), cos(theta)) * push_off
 	attached = false
 	s_dot = 0.0
 	active_hand = -1

@@ -13,16 +13,16 @@ func _init() -> void:
 	for tap_i in range(8, 21):            # 0.08 .. 0.20 s between steps
 		var tap := tap_i / 100.0
 		var row_best := 0.0
-		for d_i in range(0, 26):          # 0.00 .. 1.00 s climb delay
-			var d := d_i * 0.04
-			for a_i in range(0, 31):      # 0.60 .. 1.20 rad release angle
-				var a := 0.6 + a_i * 0.02
+		for d_i in range(0, 25):          # 0.00 .. 1.20 s climb delay
+			var d := d_i * 0.05
+			for a_i in range(0, 26):      # 0.50 .. 1.00 rad release angle
+				var a := 0.5 + a_i * 0.02
 				game.start_demo()
 				game.demo_run_tap = tap
 				game.demo_climb_delay = d
 				game.demo_release_angle = a
 				var n := 0
-				while game.state != game.State.RESULT and n < 6000:
+				while game.state != game.State.RESULT and n < 4800:
 					game._tick(dt)
 					n += 1
 				if game.result_ok:
